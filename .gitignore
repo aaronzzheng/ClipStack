@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+ClipStack.app/
+.DS_Store
+.claude/settings.local.json
