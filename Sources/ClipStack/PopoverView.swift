@@ -1,5 +1,35 @@
 import SwiftUI
 
+/// What a keypress means while the popover is open. Kept apart from the event
+/// monitor so the mapping can be tested without a live popover.
+enum PopoverKey: Equatable {
+    case pick(Int)
+    case move(Int)
+    case confirm
+    case dismiss
+
+    static func interpret(_ event: NSEvent, itemCount: Int) -> PopoverKey? {
+        switch event.keyCode {
+        case 53: return .dismiss           // esc
+        case 36, 76: return .confirm       // return, enter
+        case 125: return .move(1)          // down
+        case 126: return .move(-1)         // up
+        default: break
+        }
+        // Bare digits only. Anything with a modifier belongs to the app —
+        // ⌘Q must still quit while the popover is up.
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.isEmpty, itemCount > 0,
+              let characters = event.charactersIgnoringModifiers,
+              characters.count == 1,
+              let digit = Int(characters)
+        else { return nil }
+
+        let index = digit == 0 ? 9 : digit - 1   // 1-9 then 0 for the tenth
+        return index < itemCount ? .pick(index) : nil
+    }
+}
+
 struct PopoverView: View {
     @ObservedObject var monitor: ClipboardMonitor
     @ObservedObject var loginItem: LoginItem
@@ -16,7 +46,9 @@ struct PopoverView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(Array(monitor.clippings.enumerated()), id: \.element.id) { index, clipping in
-                            ClippingRow(index: index, clipping: clipping) {
+                            ClippingRow(index: index,
+                                        clipping: clipping,
+                                        isHighlighted: index == monitor.highlighted) {
                                 monitor.copy(clipping)
                                 dismiss()
                             }
@@ -113,9 +145,15 @@ struct PopoverView: View {
 private struct ClippingRow: View {
     let index: Int
     let clipping: ClipboardMonitor.Clipping
+    var isHighlighted = false
     let action: () -> Void
 
     @State private var isHovering = false
+
+    private var background: Color {
+        if isHighlighted { return Color.accentColor.opacity(0.20) }
+        return isHovering ? Color.primary.opacity(0.08) : Color.clear
+    }
 
     var body: some View {
         Button(action: action) {
@@ -144,7 +182,7 @@ private struct ClippingRow: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .contentShape(Rectangle())
-            .background(isHovering ? Color.primary.opacity(0.08) : Color.clear)
+            .background(background)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }

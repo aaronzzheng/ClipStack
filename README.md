@@ -46,6 +46,20 @@ it is on disk, not in memory.
 | `⌘⇧V` | Strip the clipboard to plain text and paste it |
 | `⌥⌘V` | Open the ClipStack popover |
 
+Once it is open, it is entirely keyboard-driven:
+
+| Key | Does |
+|---|---|
+| `1`–`9`, `0` | Copy that numbered clipping and close — the numbers down the left of each row are the keys |
+| `↑` `↓` | Move the highlight |
+| `return` | Copy the highlighted clipping |
+| `esc` | Close |
+
+Keys are only intercepted while the popover is open, and only when nothing is held —
+`⌘Q` still quits.
+
+So `⌥⌘V` then `2` is the whole interaction, without your hands leaving the keyboard.
+
 Both are registered with `RegisterEventHotKey`, which needs **no** privacy
 permission — unlike a `CGEventTap`, which would require Input Monitoring. If another
 app already owns a combination, registration fails quietly and everything else keeps
@@ -112,5 +126,5 @@ privacy alert; the contents are only read once the count has actually moved.
 - Image clippings are re-encoded to PNG. A copied image that was originally
   something else comes back as a PNG.
 - Shortcuts are hardcoded in `HotKeyManager.Shortcut`. There is no UI to rebind them.
-- Clicking a clipping in the list puts it on the clipboard but does not paste it; only
+- Clicking or picking a clipping puts it on the clipboard but does not paste it; only
   `⌘⇧V` pastes for you.

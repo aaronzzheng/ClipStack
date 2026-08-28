@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var hostingController: NSHostingController<PopoverView>!
+    private var keyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -116,6 +117,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    /// Installed only while the popover is up, so ordinary typing elsewhere is
+    /// never intercepted. Returning nil swallows the key; returning the event
+    /// lets it through to the app.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+            guard let key = PopoverKey.interpret(event, itemCount: self.monitor.clippings.count)
+            else { return event }
+
+            switch key {
+            case .dismiss:
+                self.popover.performClose(nil)
+            case .move(let delta):
+                let count = self.monitor.clippings.count
+                guard count > 0 else { break }
+                self.monitor.highlighted = (self.monitor.highlighted + delta + count) % count
+            case .confirm:
+                self.pick(self.monitor.highlighted)
+            case .pick(let index):
+                self.pick(index)
+            }
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
+
+    private func pick(_ index: Int) {
+        guard monitor.clippings.indices.contains(index) else { return }
+        monitor.copy(monitor.clippings[index])
+        popover.performClose(nil)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        removeKeyMonitor()
+    }
+
     private func showPopover() {
         guard let button = statusItem.button else { return }
         // It may have been toggled in System Settings since we last looked.
@@ -123,8 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Resolve the SwiftUI content size before the popover reads it.
         hostingController.view.layoutSubtreeIfNeeded()
         popover.contentSize = hostingController.view.fittingSize
+        monitor.highlighted = 0
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+        installKeyMonitor()
     }
 
     /// Opened by hotkey rather than a click, so nothing has focused us yet.

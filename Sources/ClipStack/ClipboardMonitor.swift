@@ -68,6 +68,8 @@ final class ClipboardMonitor: ObservableObject {
     private static let maxRichTextBytes = 512 * 1024
 
     @Published private(set) var clippings: [Clipping] = []
+    /// Keyboard selection in the popover; clamped whenever the list changes.
+    @Published var highlighted = 0
 
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int
@@ -239,6 +241,7 @@ final class ClipboardMonitor: ObservableObject {
         }
         if updated.count > Self.capacity { updated.removeLast(updated.count - Self.capacity) }
         clippings = updated
+        highlighted = min(highlighted, max(updated.count - 1, 0))
         persist()
     }
 
