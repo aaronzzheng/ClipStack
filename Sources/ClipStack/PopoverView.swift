@@ -101,11 +101,21 @@ private struct ClippingRow: View {
                     .foregroundStyle(.tertiary)
                     .frame(width: 12, alignment: .trailing)
 
-                Text(clipping.preview)
-                    .font(.system(size: 12))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                leading
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(clipping.preview)
+                        .font(.system(size: 12))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if let detail = clipping.detail {
+                        Text(detail)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
@@ -115,5 +125,33 @@ private struct ClippingRow: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .help("Copy to clipboard")
+    }
+
+    /// Screenshots get a thumbnail, files get their Finder icon, text gets nothing.
+    @ViewBuilder
+    private var leading: some View {
+        switch clipping.payload {
+        case .image:
+            if let thumbnail = clipping.thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 34, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    .overlay(RoundedRectangle(cornerRadius: 3)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 34, height: 24)
+            }
+        case .files(let paths):
+            Image(nsImage: NSWorkspace.shared.icon(forFile: paths[0]))
+                .resizable()
+                .frame(width: 16, height: 16)
+        case .text:
+            EmptyView()
+        }
     }
 }

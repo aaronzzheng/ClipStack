@@ -22,6 +22,20 @@ Click the menu bar icon. Your recent clippings are listed newest first — click
 to put it back on the clipboard, then paste with ⌘V as usual. Re-copying an older
 clipping promotes it to the top rather than duplicating it.
 
+It captures three kinds of clipping:
+
+| Kind | Shown as | Restored as |
+|---|---|---|
+| Text | The text, clamped to two lines | Plain text, plus RTF/HTML if the source had them, so formatting survives |
+| Images and screenshots | A thumbnail, pixel size, file size | PNG and TIFF |
+| Files copied in Finder | Finder icon, name, containing folder | The file references themselves |
+
+Files are checked before images and images before text, because copying a file in
+Finder also puts its path on as plain text and the file is the more useful thing to
+hand back. A clipping is only treated as an image when there is no usable plain text
+alongside it — some apps attach a decorative icon to text, and the text is what you
+wanted.
+
 **Clear** empties the history. History survives quitting and restarting.
 
 Turn on **Launch at login** from the copy you intend to keep (`/Applications`), not
@@ -35,9 +49,10 @@ auto-generated clippings. That check is what separates a clipboard manager from 
 password logger, so leave it in place if you fork this.
 
 It is not a guarantee: an app that copies a secret without tagging it will be
-captured like any other text. History lives in plain `UserDefaults` under
-`ClipStack.history` — it is not encrypted, and anything with access to your user
-account can read it.
+captured like any other text. History lives in
+`~/Library/Application Support/ClipStack/` — `index.json` plus one PNG per image
+clipping. None of it is encrypted, and anything with access to your user account can
+read it. **Clear** deletes both the index and the stored images.
 
 ## How it works
 
@@ -45,7 +60,8 @@ account can read it.
 
 - **`ClipStackApp.swift`** — `@main`, `AppDelegate`, status item, popover, and the
   `SMAppService` login-item switch.
-- **`ClipboardMonitor.swift`** — the pasteboard watcher and history.
+- **`ClipboardMonitor.swift`** — the pasteboard watcher, the history, and its
+  on-disk store.
 - **`PopoverView.swift`** — the SwiftUI popover.
 
 macOS posts no notification when the pasteboard changes, so the only way to observe
@@ -55,9 +71,11 @@ privacy alert; the contents are only read once the count has actually moved.
 
 ## Known limits
 
-- Text only. Copying an image or a file leaves the history untouched rather than
-  storing a placeholder.
-- Capacity is fixed at 10 (`ClipboardMonitor.capacity`).
+- Capacity is fixed at 10 (`ClipboardMonitor.capacity`). Images above 25 MB are
+  skipped rather than stored, and RTF/HTML variants above 512 KB are dropped while
+  the plain text is kept.
+- Image clippings are re-encoded to PNG. A copied image that was originally
+  something else comes back as a PNG.
 - No global hotkey — the menu bar icon is the only way in. Adding one means an event
   tap and the Input Monitoring permission.
 - Clicking a clipping puts it on the clipboard but does not paste it for you; that

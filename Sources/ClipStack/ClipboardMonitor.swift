@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 
 /// Watches the general pasteboard and keeps the most recent clippings.
 ///
@@ -7,26 +8,66 @@ import AppKit
 /// contents it never trips the system's paste privacy alert.
 final class ClipboardMonitor: ObservableObject {
 
-    struct Clipping: Identifiable, Equatable {
-        let id = UUID()
-        let text: String
+    enum Payload: Codable, Equatable {
+        case text(String)
+        case image(width: Int, height: Int, bytes: Int)
+        case files([String])
+    }
+
+    struct Clipping: Identifiable, Codable, Equatable {
+        let id: UUID
+        let payload: Payload
+        /// Content hash, so re-copying the same thing promotes rather than duplicates.
+        let fingerprint: String
+        /// Kept alongside plain text so pasting into Word or Outlook stays styled.
+        var rtf: Data?
+        var html: Data?
+
+        /// Loaded from disk at startup; never serialised.
+        var thumbnail: NSImage?
+
+        private enum CodingKeys: String, CodingKey { case id, payload, fingerprint, rtf, html }
+
+        static func == (lhs: Clipping, rhs: Clipping) -> Bool {
+            lhs.fingerprint == rhs.fingerprint
+        }
 
         /// Collapsed to a single line for the popover row.
         var preview: String {
-            text.trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "\n", with: " ")
-                .replacingOccurrences(of: "\t", with: " ")
+            switch payload {
+            case .text(let text):
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\t", with: " ")
+            case .image(let width, let height, _):
+                return "Image · \(width) × \(height)"
+            case .files(let paths):
+                return paths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+            }
         }
 
-        static func == (lhs: Clipping, rhs: Clipping) -> Bool { lhs.text == rhs.text }
+        var detail: String? {
+            switch payload {
+            case .text:
+                return nil
+            case .image(_, _, let bytes):
+                return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            case .files(let paths):
+                return paths.count == 1 ? (paths[0] as NSString).deletingLastPathComponent
+                                        : "\(paths.count) items"
+            }
+        }
     }
 
     static let capacity = 10
+    /// Retina screenshots are large; refuse anything absurd rather than filling the disk.
+    private static let maxImageBytes = 25 * 1024 * 1024
+    /// Styled-text variants are a fidelity nicety, not worth unbounded space.
+    private static let maxRichTextBytes = 512 * 1024
 
     @Published private(set) var clippings: [Clipping] = []
 
     private let pasteboard = NSPasteboard.general
-    private let defaultsKey = "ClipStack.history"
     private var lastChangeCount: Int
     private var timer: Timer?
 
@@ -40,11 +81,62 @@ final class ClipboardMonitor: ObservableObject {
         "com.agilebits.onepassword",
     ]
 
+    // MARK: Storage
+
+    private let storeDirectory: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("ClipStack", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    private var indexURL: URL { storeDirectory.appendingPathComponent("index.json") }
+    private func imageURL(_ id: UUID) -> URL {
+        storeDirectory.appendingPathComponent("\(id.uuidString).png")
+    }
+    private func thumbnailURL(_ id: UUID) -> URL {
+        storeDirectory.appendingPathComponent("\(id.uuidString)-thumb.png")
+    }
+
     init() {
         lastChangeCount = NSPasteboard.general.changeCount
-        clippings = (UserDefaults.standard.array(forKey: defaultsKey) as? [String] ?? [])
-            .map(Clipping.init(text:))
+        load()
     }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: indexURL),
+              var stored = try? JSONDecoder().decode([Clipping].self, from: data)
+        else { return }
+        for index in stored.indices {
+            if case .image = stored[index].payload {
+                stored[index].thumbnail = NSImage(contentsOf: thumbnailURL(stored[index].id))
+            }
+        }
+        clippings = stored
+        pruneOrphanedFiles()
+    }
+
+    private func persist() {
+        if let data = try? JSONEncoder().encode(clippings) {
+            try? data.write(to: indexURL, options: .atomic)
+        }
+        pruneOrphanedFiles()
+    }
+
+    /// Delete image blobs whose clipping has fallen off the end of the history.
+    private func pruneOrphanedFiles() {
+        let live = Set(clippings.map(\.id.uuidString))
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: storeDirectory, includingPropertiesForKeys: nil)) ?? []
+        for url in contents where url.pathExtension == "png" {
+            let name = url.deletingPathExtension().lastPathComponent
+            let owner = name.hasSuffix("-thumb") ? String(name.dropLast(6)) : name
+            if !live.contains(owner) { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    // MARK: Lifecycle
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
@@ -66,25 +158,89 @@ final class ClipboardMonitor: ObservableObject {
         let types = Set((pasteboard.types ?? []).map(\.rawValue))
         guard types.isDisjoint(with: Self.ignoredTypes) else { return }
 
-        guard let text = pasteboard.string(forType: .string),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
-
-        record(text)
+        // Files first: copying in Finder also puts the path on as plain text, and
+        // the file itself is the more useful thing to hand back.
+        if let clipping = readFiles() ?? readImage() ?? readText() {
+            record(clipping)
+        }
     }
 
-    private func record(_ text: String) {
-        let clipping = Clipping(text: text)
+    private func readFiles() -> Clipping? {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                                options: options) as? [URL],
+              !urls.isEmpty
+        else { return nil }
+        let paths = urls.map(\.path)
+        return Clipping(id: UUID(),
+                        payload: .files(paths),
+                        fingerprint: "files:" + paths.joined(separator: "\u{1}"))
+    }
+
+    /// Only treated as an image when there is no usable plain text — some apps
+    /// attach a decorative icon alongside text, and the text is what you wanted.
+    private func readImage() -> Clipping? {
+        guard (pasteboard.string(forType: .string) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        var png = pasteboard.data(forType: .png)
+        if png == nil, let tiff = pasteboard.data(forType: .tiff) {
+            png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        }
+        guard let png, png.count <= Self.maxImageBytes,
+              let rep = NSBitmapImageRep(data: png)
+        else { return nil }
+
+        let id = UUID()
+        try? png.write(to: imageURL(id), options: .atomic)
+
+        var clipping = Clipping(id: id,
+                                payload: .image(width: rep.pixelsWide,
+                                                height: rep.pixelsHigh,
+                                                bytes: png.count),
+                                fingerprint: "image:" + Self.digest(png))
+        if let thumbnail = Self.makeThumbnail(from: png) {
+            try? thumbnail.write(to: thumbnailURL(id), options: .atomic)
+            clipping.thumbnail = NSImage(data: thumbnail)
+        }
+        return clipping
+    }
+
+    private func readText() -> Clipping? {
+        guard let text = pasteboard.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+
+        var clipping = Clipping(id: UUID(),
+                                payload: .text(text),
+                                fingerprint: "text:" + Self.digest(Data(text.utf8)))
+        if let rtf = pasteboard.data(forType: .rtf), rtf.count <= Self.maxRichTextBytes {
+            clipping.rtf = rtf
+        }
+        if let html = pasteboard.data(forType: .html), html.count <= Self.maxRichTextBytes {
+            clipping.html = html
+        }
+        return clipping
+    }
+
+    private func record(_ clipping: Clipping) {
         var updated = clippings
-        updated.removeAll { $0 == clipping }   // re-copying an old item promotes it
-        updated.insert(clipping, at: 0)
+        if let existing = updated.firstIndex(of: clipping) {
+            // Same content already known — promote it and drop the new copy's blob.
+            let promoted = updated.remove(at: existing)
+            discardBlobs(for: clipping)
+            updated.insert(promoted, at: 0)
+        } else {
+            updated.insert(clipping, at: 0)
+        }
         if updated.count > Self.capacity { updated.removeLast(updated.count - Self.capacity) }
         clippings = updated
         persist()
     }
 
-    private func persist() {
-        UserDefaults.standard.set(clippings.map(\.text), forKey: defaultsKey)
+    private func discardBlobs(for clipping: Clipping) {
+        try? FileManager.default.removeItem(at: imageURL(clipping.id))
+        try? FileManager.default.removeItem(at: thumbnailURL(clipping.id))
     }
 
     // MARK: Actions
@@ -93,11 +249,47 @@ final class ClipboardMonitor: ObservableObject {
     /// top of the list, which is what you want after reaching for an old one.
     func copy(_ clipping: Clipping) {
         pasteboard.clearContents()
-        pasteboard.setString(clipping.text, forType: .string)
+        switch clipping.payload {
+        case .text(let text):
+            pasteboard.setString(text, forType: .string)
+            if let rtf = clipping.rtf { pasteboard.setData(rtf, forType: .rtf) }
+            if let html = clipping.html { pasteboard.setData(html, forType: .html) }
+        case .image:
+            guard let png = try? Data(contentsOf: imageURL(clipping.id)) else { return }
+            pasteboard.setData(png, forType: .png)
+            // Some older apps only look for TIFF.
+            if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation {
+                pasteboard.setData(tiff, forType: .tiff)
+            }
+        case .files(let paths):
+            pasteboard.writeObjects(paths.map { NSURL(fileURLWithPath: $0) })
+        }
     }
 
     func clear() {
         clippings = []
         persist()
+    }
+
+    // MARK: Helpers
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func makeThumbnail(from png: Data, maxEdge: CGFloat = 96) -> Data? {
+        guard let source = NSImage(data: png) else { return nil }
+        let scale = min(maxEdge / max(source.size.width, 1),
+                        maxEdge / max(source.size.height, 1), 1)
+        let size = NSSize(width: max(source.size.width * scale, 1),
+                          height: max(source.size.height * scale, 1))
+        let target = NSImage(size: size)
+        target.lockFocus()
+        source.draw(in: NSRect(origin: .zero, size: size))
+        target.unlockFocus()
+        guard let tiff = target.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 }
