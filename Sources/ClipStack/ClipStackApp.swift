@@ -59,6 +59,7 @@ final class LoginItem: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let monitor = ClipboardMonitor()
     private let loginItem = LoginItem()
+    private let hotKeys = HotKeyManager()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var hostingController: NSHostingController<PopoverView>!
@@ -88,9 +89,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = hostingController
 
         monitor.start()
+
+        hotKeys.start()
+        hotKeys.register(.pasteAsPlainText) { [weak self] in
+            self?.monitor.pasteAsPlainText()
+        }
+        hotKeys.register(.showHistory) { [weak self] in
+            self?.showPopoverFromHotKey()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hotKeys.stop()
         monitor.stop()
     }
 
@@ -101,15 +111,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         if popover.isShown {
             popover.performClose(nil)
-        } else if let button = statusItem.button {
-            // It may have been toggled in System Settings since we last looked.
-            loginItem.refresh()
-            // Resolve the SwiftUI content size before the popover reads it.
-            hostingController.view.layoutSubtreeIfNeeded()
-            popover.contentSize = hostingController.view.fittingSize
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+        } else {
+            showPopover()
         }
+    }
+
+    private func showPopover() {
+        guard let button = statusItem.button else { return }
+        // It may have been toggled in System Settings since we last looked.
+        loginItem.refresh()
+        // Resolve the SwiftUI content size before the popover reads it.
+        hostingController.view.layoutSubtreeIfNeeded()
+        popover.contentSize = hostingController.view.fittingSize
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    /// Opened by hotkey rather than a click, so nothing has focused us yet.
+    private func showPopoverFromHotKey() {
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        showPopover()
     }
 
     private func showContextMenu() {

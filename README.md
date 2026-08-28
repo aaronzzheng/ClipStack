@@ -36,7 +36,41 @@ hand back. A clipping is only treated as an image when there is no usable plain 
 alongside it — some apps attach a decorative icon to text, and the text is what you
 wanted.
 
-**Clear** empties the history. History survives quitting and restarting.
+**Clear** empties the history. History survives quitting, restarting, and shutdown —
+it is on disk, not in memory.
+
+## Shortcuts
+
+| Shortcut | Does |
+|---|---|
+| `⌘⇧V` | Strip the clipboard to plain text and paste it |
+| `⌥⌘V` | Open the ClipStack popover |
+
+Both are registered with `RegisterEventHotKey`, which needs **no** privacy
+permission — unlike a `CGEventTap`, which would require Input Monitoring. If another
+app already owns a combination, registration fails quietly and everything else keeps
+working.
+
+`⌘⇧V` is the one worth building a habit around: pasting into Word, Outlook, or
+PowerPoint stops dragging the source's fonts and colours along with it.
+
+Pressing ⌘V *for* you does need Accessibility, and it is requested the first time you
+use `⌘⇧V`. Decline it and the shortcut still strips the clipboard — you just press ⌘V
+yourself. The feature degrades instead of dying.
+
+## Transforming the clipboard
+
+The wand menu in the popover header acts on whatever is on the clipboard now:
+
+- **Strip Formatting** — drop the RTF/HTML variants, keep the text
+- **Strip Tracking Parameters** — remove `utm_*`, `fbclid`, `gclid`, `si` and friends
+  from a copied URL
+- **Pretty-Print JSON**
+- **URL-Decode**
+
+A transform that does not apply — no JSON, no tracking parameters — leaves the
+clipboard untouched rather than mangling it. The same menu lists the shortcuts above,
+since a global hotkey is otherwise undiscoverable.
 
 Turn on **Launch at login** from the copy you intend to keep (`/Applications`), not
 from a build directory — `SMAppService` registers whichever bundle is running.
@@ -60,8 +94,9 @@ read it. **Clear** deletes both the index and the stored images.
 
 - **`ClipStackApp.swift`** — `@main`, `AppDelegate`, status item, popover, and the
   `SMAppService` login-item switch.
-- **`ClipboardMonitor.swift`** — the pasteboard watcher, the history, and its
-  on-disk store.
+- **`ClipboardMonitor.swift`** — the pasteboard watcher, the history, its on-disk
+  store, and the clipboard transforms.
+- **`HotKeyManager.swift`** — Carbon global hotkeys.
 - **`PopoverView.swift`** — the SwiftUI popover.
 
 macOS posts no notification when the pasteboard changes, so the only way to observe
@@ -76,7 +111,6 @@ privacy alert; the contents are only read once the count has actually moved.
   the plain text is kept.
 - Image clippings are re-encoded to PNG. A copied image that was originally
   something else comes back as a PNG.
-- No global hotkey — the menu bar icon is the only way in. Adding one means an event
-  tap and the Input Monitoring permission.
-- Clicking a clipping puts it on the clipboard but does not paste it for you; that
-  would need Accessibility access to synthesise ⌘V.
+- Shortcuts are hardcoded in `HotKeyManager.Shortcut`. There is no UI to rebind them.
+- Clicking a clipping in the list puts it on the clipboard but does not paste it; only
+  `⌘⇧V` pastes for you.

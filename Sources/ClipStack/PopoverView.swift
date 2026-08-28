@@ -36,9 +36,10 @@ struct PopoverView: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 10) {
             Text("ClipStack").font(.system(size: 13, weight: .semibold))
             Spacer()
+            transformsMenu
             if !monitor.clippings.isEmpty {
                 Button("Clear") { monitor.clear() }
                     .buttonStyle(.plain)
@@ -48,6 +49,29 @@ struct PopoverView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// Acts on whatever is on the clipboard right now, and doubles as the only
+    /// place the global shortcuts are discoverable.
+    private var transformsMenu: some View {
+        Menu {
+            Section("Transform clipboard") {
+                ForEach(ClipboardMonitor.Transform.allCases) { transform in
+                    Button(transform.rawValue) { monitor.apply(transform) }
+                }
+            }
+            Section("Shortcuts") {
+                Text("\(HotKeyManager.Shortcut.pasteAsPlainText.display)   Paste as plain text")
+                Text("\(HotKeyManager.Shortcut.showHistory.display)   Open ClipStack")
+            }
+        } label: {
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 11))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(.secondary)
     }
 
     private var emptyState: some View {

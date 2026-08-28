@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import Carbon.HIToolbox
 import CryptoKit
 
 /// Watches the general pasteboard and keeps the most recent clippings.
@@ -70,6 +72,8 @@ final class ClipboardMonitor: ObservableObject {
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int
     private var timer: Timer?
+    private var isPasting = false
+    private var hasRequestedAccessibility = false
 
     /// Password managers and similar mark their clippings with these so history
     /// tools skip them. Honouring it is the difference between a clipboard
@@ -291,5 +295,135 @@ final class ClipboardMonitor: ObservableObject {
               let rep = NSBitmapImageRep(data: tiff)
         else { return nil }
         return rep.representation(using: .png, properties: [:])
+    }
+}
+
+// MARK: - Acting on the current clipboard
+
+extension ClipboardMonitor {
+
+    enum Transform: String, CaseIterable, Identifiable {
+        case stripFormatting = "Strip Formatting"
+        case stripTracking = "Strip Tracking Parameters"
+        case prettyJSON = "Pretty-Print JSON"
+        case urlDecode = "URL-Decode"
+
+        var id: String { rawValue }
+    }
+
+    /// Rewrite the clipboard as plain text, then paste it for you.
+    ///
+    /// Stripping the formatting needs no permission. Pressing ⌘V on your behalf
+    /// does, so if Accessibility has not been granted the clipboard is still
+    /// stripped and you paste it yourself — the feature degrades rather than dying.
+    func pasteAsPlainText() {
+        guard !isPasting, let text = pasteboard.string(forType: .string) else { return }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        guard AXIsProcessTrusted() else {
+            requestAccessibility()
+            return
+        }
+        isPasting = true
+        // Let the physical ⌘⇧V come up first, or the still-held shift rides along
+        // on our synthetic event and retriggers this very hotkey.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            Self.postCommandV()
+            self?.isPasting = false
+        }
+    }
+
+    /// Applies a transform to whatever is on the clipboard now. A transform that
+    /// does not apply — no JSON, no tracking parameters — leaves it alone.
+    @discardableResult
+    func apply(_ transform: Transform) -> Bool {
+        guard let text = pasteboard.string(forType: .string) else { return false }
+        let result: String?
+        switch transform {
+        case .stripFormatting:  result = text
+        case .stripTracking:    result = Self.stripTracking(text)
+        case .prettyJSON:       result = Self.prettyJSON(text)
+        case .urlDecode:        result = Self.urlDecode(text)
+        }
+        guard let result else { return false }
+        pasteboard.clearContents()
+        pasteboard.setString(result, forType: .string)
+        return true
+    }
+
+    // MARK: Transforms
+
+    /// Conservative list: only parameters that are unambiguously analytics.
+    private static let trackingKeys: Set<String> = [
+        "fbclid", "gclid", "dclid", "msclkid", "igshid", "mc_cid", "mc_eid",
+        "_hsenc", "_hsmi", "yclid", "twclid", "vero_id", "ttclid", "mkt_tok", "si",
+    ]
+
+    static func stripTracking(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let items = components.queryItems, !items.isEmpty
+        else { return nil }
+
+        let kept = items.filter {
+            let name = $0.name.lowercased()
+            return !(trackingKeys.contains(name) || name.hasPrefix("utm_"))
+        }
+        guard kept.count != items.count else { return nil }
+        components.queryItems = kept.isEmpty ? nil : kept
+        return components.string
+    }
+
+    static func prettyJSON(_ text: String) -> String? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let pretty = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .withoutEscapingSlashes]),
+              let string = String(data: pretty, encoding: .utf8)
+        else { return nil }
+        return string
+    }
+
+    static func urlDecode(_ text: String) -> String? {
+        guard let decoded = text.removingPercentEncoding, decoded != text else { return nil }
+        return decoded
+    }
+
+    // MARK: Keystroke synthesis
+
+    private static func postCommandV() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        guard let down = CGEvent(keyboardEventSource: source,
+                                 virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
+              let up = CGEvent(keyboardEventSource: source,
+                               virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
+        else { return }
+        // Assigning flags outright drops the modifiers still physically held.
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cgAnnotatedSessionEventTap)
+        up.post(tap: .cgAnnotatedSessionEventTap)
+    }
+
+    private func requestAccessibility() {
+        guard !hasRequestedAccessibility else { return }
+        hasRequestedAccessibility = true
+
+        let alert = NSAlert()
+        alert.messageText = "ClipStack needs Accessibility access to paste for you"
+        alert.informativeText = "Your clipboard has been stripped to plain text — press ⌘V to "
+            + "paste it. Grant Accessibility and ⌘⇧V will paste on its own."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            // Shows the system prompt and reveals us in the Accessibility list.
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+        }
     }
 }
