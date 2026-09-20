@@ -64,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private var hostingController: NSHostingController<PopoverView>!
     private var keyMonitor: Any?
+    /// The app that was in front when the hotkey opened us. Activating ourselves
+    /// to take keyboard focus steals it; on close it gets handed back, so the
+    /// clipping you just picked can be pasted where you were.
+    private var previousApp: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -156,6 +160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         removeKeyMonitor()
+        if let previousApp {
+            self.previousApp = nil
+            previousApp.activate()
+        }
     }
 
     private func showPopover() {
@@ -176,6 +184,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
             return
+        }
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousApp = front
         }
         NSApp.activate(ignoringOtherApps: true)
         showPopover()

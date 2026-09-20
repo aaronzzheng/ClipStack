@@ -43,22 +43,31 @@ struct PopoverView: View {
             if monitor.clippings.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(Array(monitor.clippings.enumerated()), id: \.element.id) { index, clipping in
-                            ClippingRow(index: index,
-                                        clipping: clipping,
-                                        isHighlighted: index == monitor.highlighted) {
-                                monitor.copy(clipping)
-                                dismiss()
-                            }
-                            if clipping.id != monitor.clippings.last?.id {
-                                Divider().padding(.leading, 32)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Array(monitor.clippings.enumerated()), id: \.element.id) { index, clipping in
+                                ClippingRow(index: index,
+                                            clipping: clipping,
+                                            isHighlighted: index == monitor.highlighted) {
+                                    monitor.copy(clipping)
+                                    dismiss()
+                                }
+                                .id(clipping.id)
+                                if clipping.id != monitor.clippings.last?.id {
+                                    Divider().padding(.leading, 32)
+                                }
                             }
                         }
                     }
+                    .frame(maxHeight: 400)
+                    // Arrowing past the bottom of a long list otherwise moves the
+                    // highlight out of sight.
+                    .onChange(of: monitor.highlighted) { _, index in
+                        guard monitor.clippings.indices.contains(index) else { return }
+                        proxy.scrollTo(monitor.clippings[index].id)
+                    }
                 }
-                .frame(maxHeight: 400)
             }
 
             Divider()
